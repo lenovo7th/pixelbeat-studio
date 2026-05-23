@@ -2,244 +2,417 @@ import React, { useState, useRef, useEffect, useCallback } from "react";
 
 declare const Tone: any;
 
-interface EffectSettings {
+// ─── Types ──────────────────────────────────────────────────────────────────
+interface FxState {
+  // Compressor
+  compEnabled: boolean;
+  compThreshold: number;  // -60 to 0 dB
+  compRatio: number;      // 1 to 20
+  compAttack: number;     // 0.001 to 0.5 s
+  compRelease: number;    // 0.01 to 1 s
+  compKnee: number;       // 0 to 40 dB
+
+  // 3-band EQ
+  eqLow: number;       // -15 to +15 dB
+  eqLowFreq: number;   // Hz
+  eqMid: number;
+  eqMidFreq: number;
+  eqMidQ: number;
+  eqHigh: number;
+  eqHighFreq: number;
+
+  // Pitch / autotune
   pitchShift: number;       // -24 to +24 semitones
   autotuneOn: boolean;
-  autotuneStrength: number; // window size ms: 0 (robotic) to 1 (natural)
-  reverbMix: number;        // 0-1
-  reverbDecay: number;      // 0.5-8 sec
-  delayTime: number;        // 0-1 sec
-  delayFeedback: number;    // 0-0.9
-  chorusDepth: number;      // 0-1
-  chorusRate: number;       // 0.1-8 hz
-  distortion: number;       // 0-1
-  outputGain: number;       // 0-2
-  bypass: boolean;
+  autotuneStrength: number; // 0 = robotic, 1 = natural
+
+  // Reverb
+  reverbMix: number;
+  reverbDecay: number;
+
+  // Delay
+  delayTime: number;
+  delayFeedback: number;
+  delayMix: number;
+
+  // Chorus
+  chorusDepth: number;
+  chorusRate: number;
+  chorusMix: number;
+
+  // Distortion
+  distortion: number;
+  distortionMix: number;
+
+  // Master
+  outputGain: number;
+  monitor: boolean;
 }
 
-const DEFAULT_EFFECTS: EffectSettings = {
+const DEFAULTS: FxState = {
+  compEnabled: true,
+  compThreshold: -24,
+  compRatio: 4,
+  compAttack: 0.003,
+  compRelease: 0.15,
+  compKnee: 10,
+
+  eqLow: 0, eqLowFreq: 120,
+  eqMid: 0, eqMidFreq: 2500, eqMidQ: 1,
+  eqHigh: 0, eqHighFreq: 8000,
+
   pitchShift: 0,
   autotuneOn: false,
-  autotuneStrength: 0.2,
-  reverbMix: 0.2,
+  autotuneStrength: 0.5,
+
+  reverbMix: 0.15,
   reverbDecay: 1.5,
+
   delayTime: 0,
-  delayFeedback: 0.3,
+  delayFeedback: 0.35,
+  delayMix: 0.3,
+
   chorusDepth: 0,
   chorusRate: 1.5,
+  chorusMix: 0.4,
+
   distortion: 0,
+  distortionMix: 1,
+
   outputGain: 1,
-  bypass: false,
+  monitor: true,
 };
 
+// ─── Presets ─────────────────────────────────────────────────────────────────
+const PRESETS: Record<string, Partial<FxState>> = {
+  "Clean":      { compThreshold:-22, compRatio:3, eqLow:1, eqMid:2, eqHigh:1.5, pitchShift:0, autotuneOn:false, reverbMix:0.05, delayTime:0, chorusDepth:0, distortion:0 },
+  "Warm Hall":  { compThreshold:-20, compRatio:4, eqLow:3, eqMid:-1, eqHigh:1, reverbMix:0.5, reverbDecay:2.8, delayTime:0, chorusDepth:0.15, chorusRate:0.8, distortion:0 },
+  "Stadium":    { compThreshold:-18, compRatio:5, eqLow:2, eqMid:1, eqHigh:2, reverbMix:0.75, reverbDecay:5.5, delayTime:0.38, delayFeedback:0.45, delayMix:0.35, chorusDepth:0.1, distortion:0 },
+  "Radio":      { compThreshold:-14, compRatio:8, compKnee:3, eqLow:-8, eqLowFreq:250, eqMid:4, eqMidFreq:3000, eqHigh:2, reverbMix:0, delayTime:0, chorusDepth:0, distortion:0.08, distortionMix:0.4 },
+  "T-Pain":     { compThreshold:-20, compRatio:4, pitchShift:0, autotuneOn:true, autotuneStrength:0.05, reverbMix:0.2, delayTime:0.12, delayFeedback:0.3, chorusDepth:0.3, chorusRate:0.5, distortion:0 },
+  "Lo-Fi":      { compThreshold:-16, compRatio:6, eqLow:-4, eqLowFreq:200, eqMid:3, eqMidFreq:2000, eqHigh:-10, eqHighFreq:5000, reverbMix:0.2, reverbDecay:0.8, delayTime:0.06, delayFeedback:0.4, distortion:0.35, distortionMix:0.6 },
+  "Deep Bass":  { pitchShift:-6, compThreshold:-22, compRatio:5, eqLow:5, eqLowFreq:80, eqMid:-2, eqHigh:-3, reverbMix:0.1, chorusDepth:0.2, distortion:0 },
+  "Chipmunk":   { pitchShift:8, autotuneOn:false, compRatio:3, eqHigh:3, reverbMix:0.1 },
+};
+
+// ─── Component ───────────────────────────────────────────────────────────────
 export default function VoiceStudio() {
-  const [fx, setFx] = useState<EffectSettings>(DEFAULT_EFFECTS);
+  const [fx, setFx] = useState<FxState>(DEFAULTS);
   const [micEnabled, setMicEnabled] = useState(false);
   const [micError, setMicError] = useState("");
   const [isRecording, setIsRecording] = useState(false);
   const [recordingBlob, setRecordingBlob] = useState<Blob | null>(null);
   const [playbackUrl, setPlaybackUrl] = useState<string | null>(null);
-  const [level, setLevel] = useState(0);
+  const [buildStatus, setBuildStatus] = useState("");
+  const [inputLevel, setInputLevel] = useState(0);
+  const [outputLevel, setOutputLevel] = useState(0);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<number>(0);
-  const analyserRef = useRef<AnalyserNode | null>(null);
+  const fxRef = useRef(fx);
 
-  // Tone nodes
-  const micRef = useRef<any>(null);
-  const pitchRef = useRef<any>(null);
-  const chorusRef = useRef<any>(null);
-  const reverbRef = useRef<any>(null);
-  const delayRef = useRef<any>(null);
-  const distRef = useRef<any>(null);
-  const gainRef = useRef<any>(null);
-  const analyserToneRef = useRef<any>(null);
+  // Tone.js node refs
+  const nodesRef = useRef<{
+    mic: any; comp: any; eq3: any; pitch: any;
+    chorus: any; reverb: any; delay: any; dist: any;
+    masterGain: any; analyserWave: any; analyserFft: any; inputAnalyser: any;
+  } | null>(null);
 
-  // MediaRecorder for capture
+  // MediaRecorder
   const mediaRecRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
 
-  const fxRef = useRef(fx);
   useEffect(() => { fxRef.current = fx; }, [fx]);
 
-  // ── Build / rebuild the effect chain ─────────────────────────
+  // ── Build effect chain ─────────────────────────────────────────────────────
   const buildChain = useCallback(async () => {
-    // Tear down existing
-    if (micRef.current) { try { await micRef.current.close(); } catch (_) {} }
-    [pitchRef, chorusRef, reverbRef, delayRef, distRef, gainRef, analyserToneRef].forEach(r => {
-      if (r.current) { try { r.current.dispose(); } catch (_) {} r.current = null; }
-    });
+    setBuildStatus("Requesting microphone…");
+    setMicError("");
+
+    // Tear down any existing chain
+    await teardownChain(false);
 
     try {
       await Tone.start();
 
+      setBuildStatus("Building effects chain…");
+
       const mic = new Tone.UserMedia();
       await mic.open();
-      micRef.current = mic;
 
+      // Input level analyser (pre-effects)
+      const inputAnalyser = new Tone.Analyser({ type: "waveform", size: 512 });
+
+      // Compressor
+      const comp = new Tone.Compressor({
+        threshold: fx.compThreshold,
+        ratio: fx.compRatio,
+        attack: fx.compAttack,
+        release: fx.compRelease,
+        knee: fx.compKnee,
+      });
+
+      // 3-band EQ
+      const eq3 = new Tone.EQ3({
+        low: fx.eqLow,
+        mid: fx.eqMid,
+        high: fx.eqHigh,
+        lowFrequency: fx.eqLowFreq,
+        highFrequency: fx.eqHighFreq,
+      });
+
+      // Pitch shift — ALWAYS wet:1, pitch controls amount
       const pitch = new Tone.PitchShift({
         pitch: fx.pitchShift,
-        windowSize: fx.autotuneOn ? lerp(0.02, 0.2, 1 - fx.autotuneStrength) : 0.1,
-        feedback: 0,
-        wet: fx.autotuneOn ? 1 : (fx.pitchShift !== 0 ? 1 : 0),
+        windowSize: mapAutotuneWindow(fx.autotuneStrength),
+        wet: (fx.autotuneOn || fx.pitchShift !== 0) ? 1 : 0,
       });
-      pitchRef.current = pitch;
 
+      // Chorus
       const chorus = new Tone.Chorus({
         rate: fx.chorusRate,
         depth: fx.chorusDepth,
-        wet: fx.chorusDepth > 0 ? 0.5 : 0,
+        wet: fx.chorusMix * (fx.chorusDepth > 0 ? 1 : 0),
       }).start();
-      chorusRef.current = chorus;
 
+      // Reverb — MUST await .ready before connecting
       const reverb = new Tone.Reverb({ decay: fx.reverbDecay, wet: fx.reverbMix });
-      reverbRef.current = reverb;
+      setBuildStatus("Generating reverb impulse…");
+      await reverb.ready;
 
+      // Delay
       const delay = new Tone.FeedbackDelay({
         delayTime: Math.max(0.001, fx.delayTime),
         feedback: fx.delayFeedback,
-        wet: fx.delayTime > 0 ? 0.5 : 0,
+        wet: fx.delayMix * (fx.delayTime > 0 ? 1 : 0),
       });
-      delayRef.current = delay;
 
-      const dist = new Tone.Distortion({ distortion: fx.distortion, wet: fx.distortion > 0 ? 1 : 0 });
-      distRef.current = dist;
+      // Distortion with proper WaveShaper
+      const dist = new Tone.Chebyshev(1); // Starts clean
+      dist.wet.value = fx.distortionMix * (fx.distortion > 0 ? 1 : 0);
+      dist.order = Math.max(1, Math.round(fx.distortion * 50));
 
-      const gainNode = new Tone.Gain(fx.outputGain);
-      gainRef.current = gainNode;
+      // Master gain
+      const masterGain = new Tone.Gain(fx.outputGain);
 
-      const analyserTone = new Tone.Analyser({ type: "waveform", size: 256 });
-      analyserToneRef.current = analyserTone;
+      // Analysers for visualizer
+      const analyserWave = new Tone.Analyser({ type: "waveform", size: 1024 });
+      const analyserFft  = new Tone.Analyser({ type: "fft", size: 512, smoothing: 0.82 });
 
-      mic.connect(pitch);
+      // Wire: mic → inputAnalyser → comp → eq3 → pitch → chorus → reverb → delay → dist → masterGain → [analysers] → destination
+      mic.connect(inputAnalyser);
+      mic.connect(fx.compEnabled ? comp : eq3);
+
+      if (fx.compEnabled) comp.connect(eq3);
+      eq3.connect(pitch);
       pitch.connect(chorus);
       chorus.connect(reverb);
       reverb.connect(delay);
       delay.connect(dist);
-      dist.connect(gainNode);
-      gainNode.connect(analyserTone);
+      dist.connect(masterGain);
+      masterGain.connect(analyserWave);
+      masterGain.connect(analyserFft);
 
-      if (!fx.bypass) gainNode.connect(Tone.getDestination());
+      if (fx.monitor) masterGain.connect(Tone.getDestination());
 
-      // Also grab the raw audio context analyser for level meter
-      const actx = Tone.getContext().rawContext as AudioContext;
-      const analyserNode = actx.createAnalyser();
-      analyserNode.fftSize = 256;
-      analyserRef.current = analyserNode;
+      nodesRef.current = { mic, comp, eq3, pitch, chorus, reverb, delay, dist, masterGain, analyserWave, analyserFft, inputAnalyser };
 
       setMicEnabled(true);
-      setMicError("");
-      startWaveformDraw(analyserTone);
+      setBuildStatus("");
+      startVisualizer(analyserWave, analyserFft, inputAnalyser);
+
     } catch (e: any) {
       setMicError(e?.message || "Microphone access denied");
+      setBuildStatus("");
       setMicEnabled(false);
     }
-  }, []); // eslint-disable-line
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const teardownChain = async () => {
+  // ── Teardown ──────────────────────────────────────────────────────────────
+  const teardownChain = async (updateState = true) => {
     cancelAnimationFrame(animRef.current);
-    if (micRef.current) { try { await micRef.current.close(); } catch (_) {} micRef.current = null; }
-    [pitchRef, chorusRef, reverbRef, delayRef, distRef, gainRef, analyserToneRef].forEach(r => {
-      if (r.current) { try { r.current.dispose(); } catch (_) {} r.current = null; }
-    });
-    setMicEnabled(false);
-    setLevel(0);
+    const n = nodesRef.current;
+    if (n) {
+      try { await n.mic.close(); } catch (_) {}
+      [n.comp, n.eq3, n.pitch, n.chorus, n.reverb, n.delay, n.dist, n.masterGain, n.analyserWave, n.analyserFft, n.inputAnalyser]
+        .forEach(node => { try { node.dispose(); } catch (_) {} });
+      nodesRef.current = null;
+    }
+    if (updateState) { setMicEnabled(false); setInputLevel(0); setOutputLevel(0); }
   };
 
-  // ── Waveform draw ─────────────────────────────────────────────
-  const startWaveformDraw = (analyser: any) => {
+  useEffect(() => () => { cancelAnimationFrame(animRef.current); teardownChain(); }, []);
+
+  // ── Live parameter update (no rebuild needed) ─────────────────────────────
+  useEffect(() => {
+    const n = nodesRef.current;
+    if (!n || !micEnabled) return;
+    try {
+      // Compressor
+      n.comp.threshold.value = fx.compThreshold;
+      n.comp.ratio.value = fx.compRatio;
+      n.comp.attack.value = fx.compAttack;
+      n.comp.release.value = fx.compRelease;
+
+      // EQ
+      n.eq3.low.value = fx.eqLow;
+      n.eq3.mid.value = fx.eqMid;
+      n.eq3.high.value = fx.eqHigh;
+      n.eq3.lowFrequency.value = fx.eqLowFreq;
+      n.eq3.highFrequency.value = fx.eqHighFreq;
+
+      // Pitch
+      n.pitch.pitch = fx.pitchShift;
+      n.pitch.windowSize = mapAutotuneWindow(fx.autotuneStrength);
+      n.pitch.wet.value = (fx.autotuneOn || fx.pitchShift !== 0) ? 1 : 0;
+
+      // Chorus
+      n.chorus.rate.value = fx.chorusRate;
+      n.chorus.depth = fx.chorusDepth;
+      n.chorus.wet.value = fx.chorusMix * (fx.chorusDepth > 0 ? 1 : 0);
+
+      // Reverb
+      n.reverb.wet.value = fx.reverbMix;
+
+      // Delay
+      n.delay.delayTime.value = Math.max(0.001, fx.delayTime);
+      n.delay.feedback.value = fx.delayFeedback;
+      n.delay.wet.value = fx.delayMix * (fx.delayTime > 0 ? 1 : 0);
+
+      // Distortion
+      n.dist.order = Math.max(1, Math.round(fx.distortion * 50));
+      n.dist.wet.value = fx.distortionMix * (fx.distortion > 0 ? 1 : 0);
+
+      // Master
+      n.masterGain.gain.value = fx.outputGain;
+    } catch (_) {}
+  }, [fx, micEnabled]);
+
+  // Monitor toggle (needs reconnect)
+  useEffect(() => {
+    const n = nodesRef.current;
+    if (!n || !micEnabled) return;
+    try {
+      if (fx.monitor) {
+        n.masterGain.connect(Tone.getDestination());
+      } else {
+        n.masterGain.disconnect(Tone.getDestination());
+      }
+    } catch (_) {}
+  }, [fx.monitor, micEnabled]);
+
+  // ── Dual visualizer: waveform + FFT spectrum ──────────────────────────────
+  const startVisualizer = (waveAnalyser: any, fftAnalyser: any, inputAnalyser: any) => {
     cancelAnimationFrame(animRef.current);
-    const canvas = canvasRef.current;
 
     const draw = () => {
       animRef.current = requestAnimationFrame(draw);
+      const canvas = canvasRef.current;
       if (!canvas) return;
       const ctx = canvas.getContext("2d")!;
       const W = canvas.width, H = canvas.height;
+      const MID = Math.floor(H * 0.42); // split between FFT (bottom) and waveform (top)
 
-      let values: Float32Array;
-      try { values = analyser.getValue() as Float32Array; } catch (_) { return; }
-
-      ctx.fillStyle = "#0a0b0e";
+      ctx.fillStyle = "#080910";
       ctx.fillRect(0, 0, W, H);
 
-      // Grid lines
-      ctx.strokeStyle = "rgba(30,34,53,0.8)";
-      ctx.lineWidth = 1;
-      for (let i = 0; i <= 4; i++) {
-        ctx.beginPath();
-        ctx.moveTo(0, (H / 4) * i);
-        ctx.lineTo(W, (H / 4) * i);
-        ctx.stroke();
+      // ── FFT spectrum (lower portion) ──
+      let fftVals: Float32Array;
+      try { fftVals = fftAnalyser.getValue() as Float32Array; } catch (_) { return; }
+
+      const barW = Math.max(2, (W / fftVals.length) * 2);
+      const fftBars = Math.floor(W / barW);
+      for (let i = 0; i < fftBars; i++) {
+        const idx = Math.floor((i / fftBars) * fftVals.length);
+        const dB = Math.max(-100, fftVals[idx]);
+        const norm = (dB + 100) / 100;  // 0 at -100dB, 1 at 0dB
+        const barH = norm * (H - MID - 4);
+        const x = i * barW;
+
+        // Color: cyan → purple by frequency
+        const hue = 180 + (i / fftBars) * 120;
+        const alpha = 0.6 + norm * 0.4;
+        ctx.fillStyle = `hsla(${hue}, 100%, 55%, ${alpha})`;
+        ctx.fillRect(x, H - barH, barW - 1, barH);
+
+        // Glow cap
+        if (norm > 0.1) {
+          ctx.fillStyle = `hsla(${hue}, 100%, 80%, 0.9)`;
+          ctx.fillRect(x, H - barH - 1, barW - 1, 2);
+        }
       }
 
-      // Waveform
+      // FFT divider line
+      ctx.strokeStyle = "rgba(0,229,255,0.12)";
+      ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = "#00e5ff";
-      const sliceW = W / values.length;
-      let maxAmp = 0;
-      values.forEach((v, i) => {
-        const x = i * sliceW;
-        const y = ((v + 1) / 2) * H;
-        maxAmp = Math.max(maxAmp, Math.abs(v));
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
+      ctx.moveTo(0, MID); ctx.lineTo(W, MID);
+      ctx.stroke();
+
+      // Label
+      ctx.fillStyle = "rgba(0,229,255,0.25)";
+      ctx.font = "9px monospace";
+      ctx.fillText("SPECTRUM", 6, MID - 4);
+
+      // ── Waveform (upper portion) ──
+      let waveVals: Float32Array;
+      try { waveVals = waveAnalyser.getValue() as Float32Array; } catch (_) { return; }
+
+      // Center line
+      ctx.strokeStyle = "rgba(255,255,255,0.06)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, MID / 2); ctx.lineTo(W, MID / 2);
+      ctx.stroke();
+
+      // Fill under waveform
+      ctx.beginPath();
+      const step = W / waveVals.length;
+      let maxOut = 0;
+      ctx.moveTo(0, MID / 2);
+      waveVals.forEach((v, i) => {
+        maxOut = Math.max(maxOut, Math.abs(v));
+        const x = i * step;
+        const y = MID / 2 + v * (MID / 2) * 0.9;
+        ctx.lineTo(x, y);
       });
+      ctx.lineTo(W, MID / 2);
+      ctx.closePath();
+      ctx.fillStyle = "rgba(0,229,255,0.05)";
+      ctx.fill();
+
+      // Waveform stroke
+      ctx.beginPath();
+      waveVals.forEach((v, i) => {
+        const x = i * step;
+        const y = MID / 2 + v * (MID / 2) * 0.9;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.strokeStyle = "#00e5ff";
+      ctx.lineWidth = 1.5;
       ctx.shadowColor = "#00e5ff";
-      ctx.shadowBlur = 6;
+      ctx.shadowBlur = 8;
       ctx.stroke();
       ctx.shadowBlur = 0;
 
-      setLevel(maxAmp);
+      // Level meters
+      let inLevel = 0;
+      try { const iv = inputAnalyser.getValue() as Float32Array; iv.forEach(v => { inLevel = Math.max(inLevel, Math.abs(v)); }); } catch (_) {}
+      setInputLevel(inLevel);
+      setOutputLevel(maxOut);
     };
     draw();
   };
 
-  // Cleanup on unmount
-  useEffect(() => () => { cancelAnimationFrame(animRef.current); teardownChain(); }, []);
-
-  // ── Live update effects without rebuild ───────────────────────
-  useEffect(() => {
-    if (!micEnabled) return;
-    try {
-      if (pitchRef.current) {
-        pitchRef.current.pitch = fx.pitchShift;
-        pitchRef.current.wet.value = (fx.autotuneOn || fx.pitchShift !== 0) ? 1 : 0;
-        if (fx.autotuneOn) {
-          pitchRef.current.windowSize = lerp(0.02, 0.2, 1 - fx.autotuneStrength);
-        }
-      }
-      if (chorusRef.current) {
-        chorusRef.current.rate.value = fx.chorusRate;
-        chorusRef.current.depth = fx.chorusDepth;
-        chorusRef.current.wet.value = fx.chorusDepth > 0 ? 0.5 : 0;
-      }
-      if (reverbRef.current) {
-        reverbRef.current.wet.value = fx.reverbMix;
-      }
-      if (delayRef.current) {
-        delayRef.current.delayTime.value = Math.max(0.001, fx.delayTime);
-        delayRef.current.feedback.value = fx.delayFeedback;
-        delayRef.current.wet.value = fx.delayTime > 0 ? 0.5 : 0;
-      }
-      if (distRef.current) {
-        distRef.current.distortion = fx.distortion;
-        distRef.current.wet.value = fx.distortion > 0 ? 1 : 0;
-      }
-      if (gainRef.current) {
-        gainRef.current.gain.value = fx.outputGain;
-      }
-    } catch (_) {}
-  }, [fx, micEnabled]);
-
-  // ── Recording ─────────────────────────────────────────────────
+  // ── Recording ─────────────────────────────────────────────────────────────
   const startRecording = () => {
-    if (!gainRef.current) return;
+    const n = nodesRef.current;
+    if (!n) return;
     try {
-      const dest = (Tone.getContext().rawContext as AudioContext).createMediaStreamDestination();
-      gainRef.current.connect(new Tone.Gain(1).connect(dest));
-      const mr = new MediaRecorder(dest.stream, { mimeType: "audio/webm" });
+      const actx = Tone.getContext().rawContext as AudioContext;
+      const dest = actx.createMediaStreamDestination();
+      n.masterGain.connect(dest);
+      const mr = new MediaRecorder(dest.stream);
       chunksRef.current = [];
       mr.ondataavailable = e => chunksRef.current.push(e.data);
       mr.onstop = () => {
@@ -251,7 +424,7 @@ export default function VoiceStudio() {
       mr.start(100);
       mediaRecRef.current = mr;
       setIsRecording(true);
-    } catch (e) { console.warn("Rec error", e); }
+    } catch (e) { console.warn("Record error:", e); }
   };
 
   const stopRecording = () => {
@@ -261,241 +434,292 @@ export default function VoiceStudio() {
 
   const saveRecording = () => {
     if (!recordingBlob) return;
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(recordingBlob);
-    a.download = "voice-recording.webm";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    const url = URL.createObjectURL(recordingBlob);
+    const a = document.createElement("a"); a.href = url; a.download = "voice-studio.webm";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
   };
 
-  const set = (patch: Partial<EffectSettings>) => setFx(prev => ({ ...prev, ...patch }));
+  const applyPreset = (name: string) => {
+    setFx(prev => ({ ...prev, ...PRESETS[name] }));
+  };
 
-  const SCALE_NOTES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+  const set = (patch: Partial<FxState>) => setFx(prev => ({ ...prev, ...patch }));
+
+  // ── VU bar helper ──────────────────────────────────────────────────────────
+  const VUBar = ({ level, label }: { level: number; label: string }) => (
+    <div className="vu-bar-group">
+      <span className="vu-label">{label}</span>
+      <div className="vu-bar-track">
+        <div className="vu-bar-fill" style={{
+          width: `${Math.min(100, level * 100)}%`,
+          background: level > 0.85 ? "var(--neon-pink)" : level > 0.6 ? "var(--neon-amber)" : "var(--neon-green)"
+        }} />
+      </div>
+      <span className="vu-db">{level > 0.001 ? `${(20 * Math.log10(level)).toFixed(0)} dB` : "-∞"}</span>
+    </div>
+  );
+
+  // ── Knob helper ────────────────────────────────────────────────────────────
+  const Knob = ({ label, min, max, step = 0.01, value, onChange, color, fmt }:
+    { label: string; min: number; max: number; step?: number; value: number; onChange: (v: number) => void; color: string; fmt?: (v: number) => string }) => (
+    <div className="vs-knob">
+      <span className="vk-label">{label}</span>
+      <input type="range" min={min} max={max} step={step}
+        value={value} onChange={e => onChange(parseFloat(e.target.value))}
+        className="vk-slider" style={{ "--vc": color } as any} />
+      <span className="vk-value">{fmt ? fmt(value) : value.toFixed(2)}</span>
+    </div>
+  );
 
   return (
     <div className="voice-studio">
-      {/* ── Mic toggle + status ── */}
+
+      {/* ── Header + mic ── */}
       <div className="vs-header">
         <div className="vs-title">
-          <span className="vs-icon">🎤</span>
-          <span>VOICE STUDIO</span>
-          <span className="vs-subtitle">Real-time vocal processing</span>
+          <span className="vs-icon">🎤</span> VOICE STUDIO
+          <span className="vs-subtitle">Professional Vocal Processing</span>
         </div>
-        <div className="vs-mic-controls">
+        <div className="vs-header-right">
+          {buildStatus && <span className="vs-status">{buildStatus}</span>}
           {!micEnabled ? (
-            <button className="mic-enable-btn" onClick={buildChain}>
-              <span>⊕</span> ENABLE MICROPHONE
-            </button>
+            <button className="mic-enable-btn" onClick={buildChain}>⊕ ENABLE MICROPHONE</button>
           ) : (
-            <button className="mic-disable-btn" onClick={teardownChain}>
-              <span>⊗</span> DISABLE MIC
-            </button>
+            <button className="mic-disable-btn" onClick={() => teardownChain()}>⊗ DISCONNECT MIC</button>
           )}
           {micError && <span className="mic-error">{micError}</span>}
         </div>
       </div>
 
-      {/* ── Waveform visualizer ── */}
+      {/* ── Presets ── */}
+      <div className="vs-presets">
+        <span className="vs-preset-label">PRESETS:</span>
+        {Object.keys(PRESETS).map(name => (
+          <button key={name} className="preset-btn" onClick={() => applyPreset(name)}>{name}</button>
+        ))}
+        <button className="preset-btn preset-reset" onClick={() => setFx(DEFAULTS)}>↺ Reset</button>
+      </div>
+
+      {/* ── Visualizer ── */}
       <div className="vs-visualizer">
-        <canvas ref={canvasRef} width={900} height={100} className="waveform-canvas" />
-        <div className="level-bar-wrap">
-          <div className="level-bar" style={{ width: `${Math.min(100, level * 100)}%` }} />
+        <canvas ref={canvasRef} width={1100} height={160} className="waveform-canvas" />
+        <div className="vs-vu-meters">
+          <VUBar level={inputLevel} label="IN" />
+          <VUBar level={outputLevel} label="OUT" />
         </div>
       </div>
 
-      {/* ── Effect chain ── */}
+      {/* ── Signal chain ── */}
+      <div className="vs-chain-label">
+        <span>MIC</span><span className="chain-arrow">→</span>
+        <span className={fx.compEnabled ? "chain-active" : "chain-off"}>COMP</span><span className="chain-arrow">→</span>
+        <span className={fx.eqLow !== 0 || fx.eqMid !== 0 || fx.eqHigh !== 0 ? "chain-active" : ""}>EQ</span><span className="chain-arrow">→</span>
+        <span className={fx.pitchShift !== 0 || fx.autotuneOn ? "chain-active" : ""}>PITCH</span><span className="chain-arrow">→</span>
+        <span className={fx.chorusDepth > 0 ? "chain-active" : ""}>CHORUS</span><span className="chain-arrow">→</span>
+        <span className={fx.reverbMix > 0 ? "chain-active" : ""}>REVERB</span><span className="chain-arrow">→</span>
+        <span className={fx.delayTime > 0 ? "chain-active" : ""}>DELAY</span><span className="chain-arrow">→</span>
+        <span className={fx.distortion > 0 ? "chain-active" : ""}>DIST</span><span className="chain-arrow">→</span>
+        <span className="chain-active">OUT</span>
+      </div>
+
+      {/* ── Effects grid ── */}
       <div className="vs-effects">
 
-        {/* AUTOTUNE / PITCH */}
-        <div className="vs-card">
+        {/* COMPRESSOR */}
+        <div className={`vs-card${!fx.compEnabled ? " vs-card-dim" : ""}`}>
           <div className="vs-card-header">
-            <span className="vs-card-title">PITCH / AUTOTUNE</span>
+            <span className="vs-card-title" style={{ color: "#ff9100" }}>COMPRESSOR</span>
             <label className="fx-toggle">
-              <input type="checkbox" checked={fx.autotuneOn} onChange={e => set({ autotuneOn: e.target.checked })} />
-              <span className="fx-toggle-track" />
-              <span className="fx-toggle-label">{fx.autotuneOn ? "ON" : "OFF"}</span>
+              <input type="checkbox" checked={fx.compEnabled} onChange={e => set({ compEnabled: e.target.checked })} />
+              <span className="fx-toggle-track" style={{ "--tc": "#ff9100" } as any} />
+              <span className="fx-toggle-label">{fx.compEnabled ? "ON" : "OFF"}</span>
             </label>
           </div>
           <div className="vs-knob-row">
-            <div className="vs-knob">
-              <span className="vk-label">PITCH SHIFT</span>
-              <input type="range" min="-24" max="24" step="1" value={fx.pitchShift}
-                onChange={e => set({ pitchShift: parseInt(e.target.value) })}
-                className="vk-slider" style={{ "--vc": "#00e5ff" } as any} />
-              <span className="vk-value">{fx.pitchShift > 0 ? "+" : ""}{fx.pitchShift} st</span>
+            <Knob label="THRESHOLD" min={-60} max={0} step={1} value={fx.compThreshold}
+              onChange={v => set({ compThreshold: v })} color="#ff9100" fmt={v => `${v} dB`} />
+            <Knob label="RATIO" min={1} max={20} step={0.5} value={fx.compRatio}
+              onChange={v => set({ compRatio: v })} color="#ff9100" fmt={v => `${v.toFixed(1)}:1`} />
+          </div>
+          <div className="vs-knob-row">
+            <Knob label="ATTACK" min={0.001} max={0.5} step={0.001} value={fx.compAttack}
+              onChange={v => set({ compAttack: v })} color="#ffb300" fmt={v => `${(v * 1000).toFixed(1)}ms`} />
+            <Knob label="RELEASE" min={0.01} max={1} step={0.01} value={fx.compRelease}
+              onChange={v => set({ compRelease: v })} color="#ffb300" fmt={v => `${(v * 1000).toFixed(0)}ms`} />
+            <Knob label="KNEE" min={0} max={40} step={1} value={fx.compKnee}
+              onChange={v => set({ compKnee: v })} color="#ffb300" fmt={v => `${v} dB`} />
+          </div>
+        </div>
+
+        {/* 3-BAND EQ */}
+        <div className="vs-card">
+          <div className="vs-card-header"><span className="vs-card-title" style={{ color: "#76ff03" }}>3-BAND EQ</span></div>
+          <div className="vs-eq-row">
+            <div className="vs-eq-band">
+              <span className="vk-label">LOW</span>
+              <input type="range" min={-15} max={15} step={0.5} value={fx.eqLow}
+                onChange={e => set({ eqLow: parseFloat(e.target.value) })}
+                className="vk-slider vk-vertical" orient="vertical" style={{ "--vc": "#76ff03" } as any} />
+              <span className="vk-value">{fx.eqLow > 0 ? "+" : ""}{fx.eqLow.toFixed(1)}</span>
+              <input type="range" min={60} max={400} step={10} value={fx.eqLowFreq}
+                onChange={e => set({ eqLowFreq: parseFloat(e.target.value) })}
+                className="vk-freq-slider" style={{ "--vc": "#76ff03" } as any} />
+              <span className="vk-freq">{fx.eqLowFreq}Hz</span>
             </div>
-            <div className="vs-knob">
-              <span className="vk-label">AUTOTUNE STRENGTH</span>
-              <input type="range" min="0" max="1" step="0.01" value={fx.autotuneStrength}
-                onChange={e => set({ autotuneStrength: parseFloat(e.target.value) })}
-                className="vk-slider" style={{ "--vc": "#d500f9" } as any}
-                disabled={!fx.autotuneOn} />
-              <span className="vk-value">{Math.round(fx.autotuneStrength * 100)}%</span>
+            <div className="vs-eq-band">
+              <span className="vk-label">MID</span>
+              <input type="range" min={-15} max={15} step={0.5} value={fx.eqMid}
+                onChange={e => set({ eqMid: parseFloat(e.target.value) })}
+                className="vk-slider vk-vertical" orient="vertical" style={{ "--vc": "#76ff03" } as any} />
+              <span className="vk-value">{fx.eqMid > 0 ? "+" : ""}{fx.eqMid.toFixed(1)}</span>
+              <input type="range" min={500} max={5000} step={100} value={fx.eqMidFreq}
+                onChange={e => set({ eqMidFreq: parseFloat(e.target.value) })}
+                className="vk-freq-slider" style={{ "--vc": "#76ff03" } as any} />
+              <span className="vk-freq">{fx.eqMidFreq >= 1000 ? `${(fx.eqMidFreq/1000).toFixed(1)}k` : `${fx.eqMidFreq}`}Hz</span>
+            </div>
+            <div className="vs-eq-band">
+              <span className="vk-label">HIGH</span>
+              <input type="range" min={-15} max={15} step={0.5} value={fx.eqHigh}
+                onChange={e => set({ eqHigh: parseFloat(e.target.value) })}
+                className="vk-slider vk-vertical" orient="vertical" style={{ "--vc": "#76ff03" } as any} />
+              <span className="vk-value">{fx.eqHigh > 0 ? "+" : ""}{fx.eqHigh.toFixed(1)}</span>
+              <input type="range" min={3000} max={16000} step={500} value={fx.eqHighFreq}
+                onChange={e => set({ eqHighFreq: parseFloat(e.target.value) })}
+                className="vk-freq-slider" style={{ "--vc": "#76ff03" } as any} />
+              <span className="vk-freq">{(fx.eqHighFreq/1000).toFixed(1)}kHz</span>
             </div>
           </div>
-          {/* Scale note selector */}
-          <div className="scale-notes">
-            <span className="vk-label">SNAP TO KEY</span>
-            <div className="scale-btns">
-              {SCALE_NOTES.map(n => (
-                <button key={n} className="scale-btn" disabled={!fx.autotuneOn}>{n}</button>
-              ))}
-            </div>
+        </div>
+
+        {/* PITCH / AUTOTUNE */}
+        <div className="vs-card">
+          <div className="vs-card-header">
+            <span className="vs-card-title" style={{ color: "#d500f9" }}>PITCH / AUTOTUNE</span>
+            <label className="fx-toggle">
+              <input type="checkbox" checked={fx.autotuneOn} onChange={e => set({ autotuneOn: e.target.checked })} />
+              <span className="fx-toggle-track" style={{ "--tc": "#d500f9" } as any} />
+              <span className="fx-toggle-label">{fx.autotuneOn ? "AUTO" : "MANUAL"}</span>
+            </label>
           </div>
+          <div className="vs-knob-row">
+            <Knob label="PITCH SHIFT" min={-24} max={24} step={1} value={fx.pitchShift}
+              onChange={v => set({ pitchShift: v })} color="#d500f9"
+              fmt={v => `${v > 0 ? "+" : ""}${v} st`} />
+            <Knob label={fx.autotuneOn ? "CORRECTION" : "WINDOW"} min={0} max={1} step={0.01} value={fx.autotuneStrength}
+              onChange={v => set({ autotuneStrength: v })} color="#d500f9"
+              fmt={v => fx.autotuneOn ? (v < 0.2 ? "Robotic" : v > 0.7 ? "Natural" : "Medium") : `${Math.round(v * 100)}%`} />
+          </div>
+          {fx.autotuneOn && (
+            <div className="vs-note" style={{ color: "rgba(213,0,249,0.7)" }}>
+              Autotune is ON — low "Correction" = more robotic (T-Pain), high = more transparent (Melodyne-style)
+            </div>
+          )}
         </div>
 
         {/* REVERB */}
         <div className="vs-card">
-          <div className="vs-card-header"><span className="vs-card-title">REVERB</span></div>
+          <div className="vs-card-header"><span className="vs-card-title" style={{ color: "#00e5ff" }}>REVERB</span></div>
           <div className="vs-knob-row">
-            <div className="vs-knob">
-              <span className="vk-label">MIX</span>
-              <input type="range" min="0" max="1" step="0.01" value={fx.reverbMix}
-                onChange={e => set({ reverbMix: parseFloat(e.target.value) })}
-                className="vk-slider" style={{ "--vc": "#39ff14" } as any} />
-              <span className="vk-value">{Math.round(fx.reverbMix * 100)}%</span>
-            </div>
-            <div className="vs-knob">
-              <span className="vk-label">DECAY</span>
-              <input type="range" min="0.3" max="8" step="0.1" value={fx.reverbDecay}
-                onChange={e => set({ reverbDecay: parseFloat(e.target.value) })}
-                className="vk-slider" style={{ "--vc": "#39ff14" } as any} />
-              <span className="vk-value">{fx.reverbDecay.toFixed(1)}s</span>
-            </div>
+            <Knob label="MIX" min={0} max={1} step={0.01} value={fx.reverbMix}
+              onChange={v => set({ reverbMix: v })} color="#00e5ff" fmt={v => `${Math.round(v * 100)}%`} />
+            <Knob label="DECAY" min={0.3} max={10} step={0.1} value={fx.reverbDecay}
+              onChange={v => set({ reverbDecay: v })} color="#00e5ff" fmt={v => `${v.toFixed(1)}s`} />
           </div>
+          <div className="vs-note">⚠ Changing decay rebuilds the reverb IR — click "Rebuild" to apply.</div>
+          <button className="vs-rebuild-btn" onClick={buildChain} disabled={!micEnabled}>↺ Rebuild Reverb</button>
         </div>
 
         {/* DELAY */}
         <div className="vs-card">
-          <div className="vs-card-header"><span className="vs-card-title">DELAY / ECHO</span></div>
+          <div className="vs-card-header"><span className="vs-card-title" style={{ color: "#ffb300" }}>DELAY / ECHO</span></div>
           <div className="vs-knob-row">
-            <div className="vs-knob">
-              <span className="vk-label">TIME</span>
-              <input type="range" min="0" max="1" step="0.01" value={fx.delayTime}
-                onChange={e => set({ delayTime: parseFloat(e.target.value) })}
-                className="vk-slider" style={{ "--vc": "#ffb300" } as any} />
-              <span className="vk-value">{(fx.delayTime * 1000).toFixed(0)}ms</span>
-            </div>
-            <div className="vs-knob">
-              <span className="vk-label">FEEDBACK</span>
-              <input type="range" min="0" max="0.9" step="0.01" value={fx.delayFeedback}
-                onChange={e => set({ delayFeedback: parseFloat(e.target.value) })}
-                className="vk-slider" style={{ "--vc": "#ffb300" } as any} />
-              <span className="vk-value">{Math.round(fx.delayFeedback * 100)}%</span>
-            </div>
+            <Knob label="TIME" min={0} max={1} step={0.01} value={fx.delayTime}
+              onChange={v => set({ delayTime: v })} color="#ffb300" fmt={v => `${(v * 1000).toFixed(0)}ms`} />
+            <Knob label="FEEDBACK" min={0} max={0.9} step={0.01} value={fx.delayFeedback}
+              onChange={v => set({ delayFeedback: v })} color="#ffb300" fmt={v => `${Math.round(v * 100)}%`} />
+            <Knob label="MIX" min={0} max={1} step={0.01} value={fx.delayMix}
+              onChange={v => set({ delayMix: v })} color="#ffb300" fmt={v => `${Math.round(v * 100)}%`} />
           </div>
         </div>
 
         {/* CHORUS */}
         <div className="vs-card">
-          <div className="vs-card-header"><span className="vs-card-title">CHORUS</span></div>
+          <div className="vs-card-header"><span className="vs-card-title" style={{ color: "#39ff14" }}>CHORUS / DOUBLE</span></div>
           <div className="vs-knob-row">
-            <div className="vs-knob">
-              <span className="vk-label">DEPTH</span>
-              <input type="range" min="0" max="1" step="0.01" value={fx.chorusDepth}
-                onChange={e => set({ chorusDepth: parseFloat(e.target.value) })}
-                className="vk-slider" style={{ "--vc": "#76ff03" } as any} />
-              <span className="vk-value">{Math.round(fx.chorusDepth * 100)}%</span>
-            </div>
-            <div className="vs-knob">
-              <span className="vk-label">RATE</span>
-              <input type="range" min="0.1" max="8" step="0.1" value={fx.chorusRate}
-                onChange={e => set({ chorusRate: parseFloat(e.target.value) })}
-                className="vk-slider" style={{ "--vc": "#76ff03" } as any} />
-              <span className="vk-value">{fx.chorusRate.toFixed(1)} Hz</span>
-            </div>
+            <Knob label="DEPTH" min={0} max={1} step={0.01} value={fx.chorusDepth}
+              onChange={v => set({ chorusDepth: v })} color="#39ff14" fmt={v => `${Math.round(v * 100)}%`} />
+            <Knob label="RATE" min={0.1} max={8} step={0.1} value={fx.chorusRate}
+              onChange={v => set({ chorusRate: v })} color="#39ff14" fmt={v => `${v.toFixed(1)} Hz`} />
+            <Knob label="MIX" min={0} max={1} step={0.01} value={fx.chorusMix}
+              onChange={v => set({ chorusMix: v })} color="#39ff14" fmt={v => `${Math.round(v * 100)}%`} />
           </div>
         </div>
 
-        {/* DISTORTION + GAIN */}
+        {/* DISTORTION */}
         <div className="vs-card">
-          <div className="vs-card-header"><span className="vs-card-title">DISTORTION / GAIN</span></div>
+          <div className="vs-card-header"><span className="vs-card-title" style={{ color: "#ff4081" }}>SATURATION / DIST</span></div>
           <div className="vs-knob-row">
-            <div className="vs-knob">
-              <span className="vk-label">DISTORTION</span>
-              <input type="range" min="0" max="1" step="0.01" value={fx.distortion}
-                onChange={e => set({ distortion: parseFloat(e.target.value) })}
-                className="vk-slider" style={{ "--vc": "#ff4081" } as any} />
-              <span className="vk-value">{Math.round(fx.distortion * 100)}%</span>
-            </div>
-            <div className="vs-knob">
-              <span className="vk-label">OUTPUT GAIN</span>
-              <input type="range" min="0" max="2" step="0.01" value={fx.outputGain}
-                onChange={e => set({ outputGain: parseFloat(e.target.value) })}
-                className="vk-slider" style={{ "--vc": "#00e5ff" } as any} />
-              <span className="vk-value">{Math.round(fx.outputGain * 100)}%</span>
-            </div>
+            <Knob label="DRIVE" min={0} max={1} step={0.01} value={fx.distortion}
+              onChange={v => set({ distortion: v })} color="#ff4081"
+              fmt={v => v < 0.1 ? "Clean" : v < 0.4 ? "Warm" : v < 0.7 ? "Gritty" : "Destroyed"} />
+            <Knob label="MIX" min={0} max={1} step={0.01} value={fx.distortionMix}
+              onChange={v => set({ distortionMix: v })} color="#ff4081" fmt={v => `${Math.round(v * 100)}%`} />
           </div>
         </div>
 
-        {/* BYPASS */}
-        <div className="vs-card vs-card-bypass">
+        {/* MASTER */}
+        <div className="vs-card">
           <div className="vs-card-header">
-            <span className="vs-card-title">MONITORING</span>
+            <span className="vs-card-title" style={{ color: "#fff" }}>MASTER</span>
             <label className="fx-toggle">
-              <input type="checkbox" checked={!fx.bypass} onChange={e => set({ bypass: !e.target.checked })} />
-              <span className="fx-toggle-track" />
-              <span className="fx-toggle-label">{!fx.bypass ? "LIVE" : "MUTED"}</span>
+              <input type="checkbox" checked={fx.monitor} onChange={e => set({ monitor: e.target.checked })} />
+              <span className="fx-toggle-track" style={{ "--tc": "#00e5ff" } as any} />
+              <span className="fx-toggle-label">{fx.monitor ? "🔊 LIVE" : "🔇 MUTED"}</span>
             </label>
           </div>
-          <div className="vs-note">⚠ Headphones recommended to prevent feedback when monitoring live.</div>
-          <button className="reset-fx-btn" onClick={() => setFx(DEFAULT_EFFECTS)}>RESET ALL EFFECTS</button>
+          <Knob label="OUTPUT GAIN" min={0} max={2} step={0.01} value={fx.outputGain}
+            onChange={v => set({ outputGain: v })} color="#ffffff" fmt={v => `${Math.round(v * 100)}%`} />
+          <div className="vs-note" style={{ marginTop: 6 }}>
+            ⚠ Use headphones when monitoring live to prevent feedback.
+          </div>
         </div>
+
       </div>
 
-      {/* ── Recording controls ── */}
+      {/* ── Recording bar ── */}
       <div className="vs-rec-bar">
         <div className="vs-rec-controls">
           {!isRecording ? (
-            <button
-              className="vs-rec-btn"
-              onClick={startRecording}
-              disabled={!micEnabled}
-              title="Record your processed voice"
-            >
-              <span className="rec-dot" />
-              START RECORDING
+            <button className="vs-rec-btn" onClick={startRecording} disabled={!micEnabled}>
+              <span className="rec-dot" /> START RECORDING
             </button>
           ) : (
             <button className="vs-rec-btn vs-rec-active" onClick={stopRecording}>
-              <span className="rec-dot rec-pulse" />
-              STOP RECORDING
+              <span className="rec-dot rec-pulse" /> STOP RECORDING
             </button>
           )}
           {recordingBlob && !isRecording && (
             <>
               <button className="vs-save-btn" onClick={saveRecording}>
-                <svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M4 12v4a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-4" />
-                  <polyline points="7,8 10,11 13,8" />
-                  <line x1="10" y1="1" x2="10" y2="11" />
-                </svg>
-                SAVE RECORDING
+                ↓ SAVE RECORDING
               </button>
-              {playbackUrl && (
-                <audio controls src={playbackUrl} className="vs-playback" />
-              )}
+              {playbackUrl && <audio controls src={playbackUrl} className="vs-playback" />}
             </>
           )}
         </div>
-        <div className={`vs-level-indicator${level > 0.05 ? " vs-level-active" : ""}`}>
-          <span className="vli-label">INPUT</span>
-          {Array.from({ length: 20 }, (_, i) => (
-            <div
-              key={i}
-              className="vli-bar"
-              style={{
-                background: i < Math.round(level * 20)
-                  ? (i < 14 ? "#39ff14" : i < 18 ? "#ffb300" : "#ff4081")
-                  : "rgba(255,255,255,0.06)"
-              }}
-            />
-          ))}
+        <div className="vs-vu-meters-horiz">
+          <VUBar level={inputLevel} label="IN" />
+          <VUBar level={outputLevel} label="OUT" />
         </div>
       </div>
+
     </div>
   );
 }
 
-function lerp(a: number, b: number, t: number) { return a + (b - a) * t; }
+// ── Helpers ───────────────────────────────────────────────────────────────────
+// Lower window = more robotic/stepped autotune; higher = more transparent
+function mapAutotuneWindow(strength: number): number {
+  return 0.015 + strength * 0.185; // 15ms (robotic) to 200ms (natural)
+}
