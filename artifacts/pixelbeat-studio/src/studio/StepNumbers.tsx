@@ -1,25 +1,18 @@
 import React from "react";
+import { STEPS, STEP_W, STEP_GAP } from "./types";
 
-interface StepNumbersProps {
-  steps: number;
-}
-
-export default function StepNumbers({ steps }: StepNumbersProps) {
+export default function StepNumbers({ steps }: { steps: number }) {
   return (
     <div className="step-numbers-row">
-      {Array.from({ length: steps / 4 }, (_, g) =>
-        <div key={g} className="step-group-nums">
-          {[0,1,2,3].map(s => {
-            const n = g * 4 + s + 1;
-            const isBeat = s === 0;
-            return (
-              <span key={s} className={`step-num ${isBeat ? "step-num-beat" : ""}`}>
-                {isBeat ? n : "·"}
-              </span>
-            );
-          })}
-        </div>
-      )}
+      {Array.from({ length: steps }, (_, i) => (
+        <span
+          key={i}
+          className={`step-num${i % 4 === 0 ? " sn-beat" : ""}${i % 16 === 0 ? " sn-bar" : ""}`}
+          style={{ width: STEP_W, minWidth: STEP_W }}
+        >
+          {i % 4 === 0 ? i + 1 : "·"}
+        </span>
+      ))}
     </div>
   );
 }
