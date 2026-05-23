@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "PixelBeat Studio"
+version = "1.0.0"
+id = "artifacts/pixelbeat-studio"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 24624
+
+[services.development]
+run = "pnpm --filter @workspace/pixelbeat-studio run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/pixelbeat-studio", "run", "build" ]
+publicDir = "artifacts/pixelbeat-studio/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "24624"
+BASE_PATH = "/"
