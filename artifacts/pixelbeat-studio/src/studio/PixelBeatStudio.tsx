@@ -1,72 +1,66 @@
-import React, { useState } from "react";
+import React, { useState, useCallback } from "react";
 import TrackRow from "./TrackRow";
 import TransportBar from "./TransportBar";
 import PatternManager from "./PatternManager";
+import StepNumbers from "./StepNumbers";
 import { useSequencer } from "./useSequencer";
-import { StudioState, Pattern, Track, Cell } from "./types";
+import { StudioState, Pattern, Track, Cell, STEPS } from "./types";
 
-const INITIAL_CELLS = (): Cell[] => Array.from({ length: 16 }, () => ({ active: false, note: "C4" }));
+const INITIAL_CELLS = (): Cell[] =>
+  Array.from({ length: STEPS }, () => ({ active: false, note: "C4" as const }));
 
 const createEmptyTrack = (id: any, label: string, color: string): Track => ({
-  id,
-  label,
-  color,
-  volume: 0.8,
-  muted: false,
-  steps: INITIAL_CELLS()
+  id, label, color, volume: 0.8, muted: false, steps: INITIAL_CELLS()
 });
 
-const createInitialState = (): StudioState => {
-  const patterns: Pattern[] = Array.from({ length: 4 }, (_, i) => {
-    const tracks = [
-      createEmptyTrack("drums", "Drums", "#ff4081"),
-      createEmptyTrack("piano", "Piano", "#00e5ff"),
-      createEmptyTrack("guitar", "Guitar", "#ffb300"),
-      createEmptyTrack("violin", "Violin", "#39ff14")
-    ];
-
-    if (i === 0) {
-      // 4-on-the-floor kick
-      [0, 4, 8, 12].forEach(step => {
-        tracks[0].steps[step].active = true;
-      });
-    }
-
-    return {
-      id: i + 1,
-      name: `PAT ${i + 1}`,
-      tracks
-    };
-  });
-
-  return {
-    patterns,
-    currentPatternId: 1,
-    chainEnabled: false,
-    chainOrder: [1, 2, 3, 4]
-  };
+const makePattern = (id: number, withDrums = false): Pattern => {
+  const tracks = [
+    createEmptyTrack("drums", "DRUMS", "#ff4081"),
+    createEmptyTrack("piano", "PIANO", "#00e5ff"),
+    createEmptyTrack("guitar", "GUITAR", "#ffb300"),
+    createEmptyTrack("violin", "VIOLIN", "#39ff14"),
+  ];
+  if (withDrums) {
+    [0, 4, 8, 12, 16, 20, 24, 28].forEach(s => {
+      tracks[0].steps[s].active = true;
+    });
+  }
+  return { id, name: `PAT ${id}`, tracks };
 };
 
+const createInitialState = (): StudioState => ({
+  patterns: [makePattern(1, true), makePattern(2), makePattern(3), makePattern(4)],
+  currentPatternId: 1,
+  nextPatternId: 5,
+  chainEnabled: false,
+});
+
 export default function PixelBeatStudio() {
-  const [state, setState] = useState<StudioState>(createInitialState());
+  const [state, setState] = useState<StudioState>(createInitialState);
   const [bpm, setBpm] = useState(120);
 
   const currentPattern = state.patterns.find(p => p.id === state.currentPatternId)!;
 
-  const { isPlaying, isPaused, currentStep, play, stop, pause } = useSequencer(currentPattern.tracks, bpm);
+  const handleChainPatternChange = useCallback((patternId: number) => {
+    setState(prev => ({ ...prev, currentPatternId: patternId }));
+  }, []);
+
+  const { isPlaying, isPaused, currentStep, play, stop, pause, resume } = useSequencer(
+    currentPattern.tracks,
+    bpm,
+    state.patterns,
+    state.chainEnabled,
+    handleChainPatternChange
+  );
 
   const handleUpdateTrack = (updatedTrack: Track) => {
     setState(prev => ({
       ...prev,
-      patterns: prev.patterns.map(p => {
-        if (p.id === currentPattern.id) {
-          return {
-            ...p,
-            tracks: p.tracks.map(t => t.id === updatedTrack.id ? updatedTrack : t)
-          };
-        }
-        return p;
-      })
+      patterns: prev.patterns.map(p =>
+        p.id === prev.currentPatternId
+          ? { ...p, tracks: p.tracks.map(t => t.id === updatedTrack.id ? updatedTrack : t) }
+          : p
+      ),
     }));
   };
 
@@ -74,35 +68,92 @@ export default function PixelBeatStudio() {
     setState(prev => ({ ...prev, currentPatternId: id }));
   };
 
+  const handleAddPattern = () => {
+    setState(prev => {
+      const newId = prev.nextPatternId;
+      return {
+        ...prev,
+        patterns: [...prev.patterns, makePattern(newId)],
+        currentPatternId: newId,
+        nextPatternId: newId + 1,
+      };
+    });
+  };
+
+  const handleDeletePattern = (id: number) => {
+    setState(prev => {
+      if (prev.patterns.length <= 1) return prev;
+      const remaining = prev.patterns.filter(p => p.id !== id);
+      const newCurrent = prev.currentPatternId === id ? remaining[0].id : prev.currentPatternId;
+      return { ...prev, patterns: remaining, currentPatternId: newCurrent };
+    });
+  };
+
+  const handleToggleChain = () => {
+    setState(prev => ({ ...prev, chainEnabled: !prev.chainEnabled }));
+  };
+
+  const handlePlayAll = async () => {
+    setState(prev => ({ ...prev, chainEnabled: true, currentPatternId: prev.patterns[0].id }));
+    await play();
+  };
+
   return (
     <div className="studio-container">
-      <div className="studio-header">
-        <TransportBar 
+      <div className="studio-titlebar">
+        <span className="studio-logo">
+          <span className="studio-logo-pixel">■</span> PixelBeat Studio
+        </span>
+        <span className="studio-subtitle">Game Music Sequencer</span>
+      </div>
+
+      <div className="studio-toolbar">
+        <TransportBar
           isPlaying={isPlaying}
           isPaused={isPaused}
           bpm={bpm}
+          chainEnabled={state.chainEnabled}
           onPlay={play}
           onPause={pause}
+          onResume={resume}
           onStop={stop}
           onBpmChange={setBpm}
+          onPlayAll={handlePlayAll}
+          onToggleChain={handleToggleChain}
           currentPattern={currentPattern}
+          allPatterns={state.patterns}
         />
-        <PatternManager 
+      </div>
+
+      <div className="studio-pattern-bar">
+        <PatternManager
           patterns={state.patterns}
           currentPatternId={state.currentPatternId}
           onSelectPattern={handleSelectPattern}
+          onAddPattern={handleAddPattern}
+          onDeletePattern={handleDeletePattern}
         />
       </div>
-      
-      <div className="tracks-container">
-        {currentPattern.tracks.map(track => (
-          <TrackRow 
-            key={track.id}
-            track={track}
-            currentStep={isPlaying ? currentStep : -1}
-            onUpdateTrack={handleUpdateTrack}
-          />
-        ))}
+
+      <div className="channel-rack">
+        <div className="channel-rack-header">
+          <div className="rack-label-col">CHANNEL</div>
+          <div className="rack-grid-col">
+            <StepNumbers steps={STEPS} />
+          </div>
+          <div className="rack-strip-col" />
+        </div>
+
+        <div className="tracks-list">
+          {currentPattern.tracks.map(track => (
+            <TrackRow
+              key={track.id}
+              track={track}
+              currentStep={isPlaying || isPaused ? currentStep : -1}
+              onUpdateTrack={handleUpdateTrack}
+            />
+          ))}
+        </div>
       </div>
     </div>
   );
