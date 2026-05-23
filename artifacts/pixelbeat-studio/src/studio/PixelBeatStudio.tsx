@@ -3,6 +3,7 @@ import TrackRow from "./TrackRow";
 import TransportBar from "./TransportBar";
 import PatternManager from "./PatternManager";
 import StepNumbers from "./StepNumbers";
+import VoiceStudio from "./VoiceStudio";
 import { useSequencer } from "./useSequencer";
 import {
   StudioState, Pattern, Track, Cell, InstrumentFamily,
@@ -50,10 +51,13 @@ const createInitialState = (): StudioState => ({
   chainEnabled: false,
 });
 
+type TabId = "sequencer" | "voice";
+
 export default function PixelBeatStudio() {
   const [state, setState] = useState<StudioState>(createInitialState);
   const [bpm, setBpm] = useState(120);
   const [showAddTrack, setShowAddTrack] = useState(false);
+  const [activeTab, setActiveTab] = useState<TabId>("sequencer");
 
   const currentPattern = state.patterns.find(p => p.id === state.currentPatternId)!;
 
@@ -61,11 +65,14 @@ export default function PixelBeatStudio() {
     setState(prev => ({ ...prev, currentPatternId: patternId }));
   }, []);
 
-  const { isPlaying, isPaused, currentStep, play, stop, pause, resume } = useSequencer(
+  const {
+    isPlaying, isPaused, currentStep, isRecording,
+    play, playMerged, stop, pause, resume,
+    startRecording, stopAndSave
+  } = useSequencer(
     currentPattern.tracks, bpm, state.patterns, state.chainEnabled, handleChainPatternChange
   );
 
-  // Full update: steps go to current pattern only, meta propagates to all patterns
   const handleUpdateTrack = (updated: Track) => {
     setState(prev => ({
       ...prev,
@@ -74,7 +81,6 @@ export default function PixelBeatStudio() {
         tracks: p.tracks.map(t => {
           if (t.id !== updated.id) return t;
           if (p.id === prev.currentPatternId) return updated;
-          // Other patterns: only sync meta, not steps
           return {
             ...t,
             family: updated.family, modelId: updated.modelId,
@@ -91,8 +97,11 @@ export default function PixelBeatStudio() {
   const handleAddPattern = () => {
     setState(prev => {
       const newId = prev.nextPatternId;
-      // Copy track structure (without steps) from current pattern
-      const tracks = prev.patterns[0].tracks.map(t => ({ ...t, id: `t${prev.nextTrackId + t.id.charCodeAt(1)}`, steps: INITIAL_CELLS() }));
+      const tracks = prev.patterns[0].tracks.map(t => ({
+        ...t,
+        id: `t${prev.nextTrackId + Math.abs(t.id.charCodeAt(1) || 1)}`,
+        steps: INITIAL_CELLS()
+      }));
       return {
         ...prev,
         patterns: [...prev.patterns, { id: newId, name: `PAT ${newId}`, tracks }],
@@ -143,83 +152,106 @@ export default function PixelBeatStudio() {
 
   const handleToggleChain = () => setState(prev => ({ ...prev, chainEnabled: !prev.chainEnabled }));
 
-  const handlePlayAll = async () => {
-    setState(prev => ({
-      ...prev,
-      chainEnabled: true,
-      currentPatternId: prev.patterns[0].id,
-    }));
-    await play();
+  const handlePlayMerged = async () => {
+    setState(prev => ({ ...prev, chainEnabled: false }));
+    await playMerged();
   };
 
   return (
     <div className="studio-container">
+      {/* ── Title bar ── */}
       <div className="studio-titlebar">
         <span className="studio-logo"><span className="logo-pixel">■</span> PixelBeat Studio</span>
+        <div className="studio-tabs">
+          <button
+            className={`studio-tab${activeTab === "sequencer" ? " tab-active" : ""}`}
+            onClick={() => setActiveTab("sequencer")}
+          >
+            SEQUENCER
+          </button>
+          <button
+            className={`studio-tab${activeTab === "voice" ? " tab-active" : ""}`}
+            onClick={() => setActiveTab("voice")}
+          >
+            🎤 VOICE
+          </button>
+        </div>
         <span className="studio-subtitle">Game Music Sequencer</span>
       </div>
 
+      {/* ── Transport (always visible) ── */}
       <div className="studio-toolbar">
         <TransportBar
-          isPlaying={isPlaying} isPaused={isPaused} bpm={bpm}
-          chainEnabled={state.chainEnabled}
+          isPlaying={isPlaying} isPaused={isPaused} isRecording={isRecording}
+          bpm={bpm} chainEnabled={state.chainEnabled}
           onPlay={play} onPause={pause} onResume={resume} onStop={stop}
-          onBpmChange={setBpm} onPlayAll={handlePlayAll} onToggleChain={handleToggleChain}
+          onBpmChange={setBpm}
+          onPlayMerged={handlePlayMerged}
+          onToggleChain={handleToggleChain}
+          onStartRecording={startRecording}
+          onStopAndSave={stopAndSave}
           currentPattern={currentPattern} allPatterns={state.patterns}
         />
       </div>
 
-      <div className="studio-pattern-bar">
-        <PatternManager
-          patterns={state.patterns} currentPatternId={state.currentPatternId}
-          onSelectPattern={handleSelectPattern}
-          onAddPattern={handleAddPattern} onDeletePattern={handleDeletePattern}
-        />
-      </div>
-
-      <div className="channel-rack">
-        <div className="rack-header">
-          <div className="rack-label-col">CHANNEL</div>
-          <div className="rack-grid-col"><StepNumbers steps={STEPS} /></div>
-          <div className="rack-strip-col" />
-        </div>
-
-        <div className="tracks-list">
-          {currentPattern.tracks.map(track => (
-            <TrackRow
-              key={track.id}
-              track={track}
-              currentStep={isPlaying || isPaused ? currentStep : -1}
-              onUpdateTrack={handleUpdateTrack}
-              onRemoveTrack={handleRemoveTrack}
+      {/* ── Sequencer tab ── */}
+      {activeTab === "sequencer" && (
+        <>
+          <div className="studio-pattern-bar">
+            <PatternManager
+              patterns={state.patterns} currentPatternId={state.currentPatternId}
+              onSelectPattern={handleSelectPattern}
+              onAddPattern={handleAddPattern} onDeletePattern={handleDeletePattern}
             />
-          ))}
-        </div>
+          </div>
 
-        <div className="add-track-bar">
-          {!showAddTrack ? (
-            <button className="add-track-btn" onClick={() => setShowAddTrack(true)} data-testid="btn-add-track">
-              + ADD CHANNEL
-            </button>
-          ) : (
-            <div className="add-track-picker">
-              <span className="add-track-label">Choose instrument:</span>
-              {(Object.keys(INSTRUMENT_FAMILIES) as InstrumentFamily[]).map(fam => (
-                <button
-                  key={fam}
-                  className="fam-btn"
-                  style={{ borderColor: INSTRUMENT_FAMILIES[fam].color, color: INSTRUMENT_FAMILIES[fam].color }}
-                  onClick={() => handleAddTrack(fam)}
-                  data-testid={`add-fam-${fam}`}
-                >
-                  {INSTRUMENT_FAMILIES[fam].label}
-                </button>
-              ))}
-              <button className="fam-cancel" onClick={() => setShowAddTrack(false)}>Cancel</button>
+          <div className="channel-rack">
+            <div className="rack-header">
+              <div className="rack-label-col">CHANNEL</div>
+              <div className="rack-grid-col"><StepNumbers steps={STEPS} /></div>
+              <div className="rack-strip-col" />
             </div>
-          )}
-        </div>
-      </div>
+
+            <div className="tracks-list">
+              {currentPattern.tracks.map(track => (
+                <TrackRow
+                  key={track.id}
+                  track={track}
+                  currentStep={isPlaying || isPaused ? currentStep : -1}
+                  onUpdateTrack={handleUpdateTrack}
+                  onRemoveTrack={handleRemoveTrack}
+                />
+              ))}
+            </div>
+
+            <div className="add-track-bar">
+              {!showAddTrack ? (
+                <button className="add-track-btn" onClick={() => setShowAddTrack(true)}>
+                  + ADD CHANNEL
+                </button>
+              ) : (
+                <div className="add-track-picker">
+                  <span className="add-track-label">Choose instrument:</span>
+                  {(Object.keys(INSTRUMENT_FAMILIES) as InstrumentFamily[]).map(fam => (
+                    <button
+                      key={fam}
+                      className="fam-btn"
+                      style={{ borderColor: INSTRUMENT_FAMILIES[fam].color, color: INSTRUMENT_FAMILIES[fam].color }}
+                      onClick={() => handleAddTrack(fam)}
+                    >
+                      {INSTRUMENT_FAMILIES[fam].label}
+                    </button>
+                  ))}
+                  <button className="fam-cancel" onClick={() => setShowAddTrack(false)}>Cancel</button>
+                </div>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ── Voice Studio tab ── */}
+      {activeTab === "voice" && <VoiceStudio />}
     </div>
   );
 }

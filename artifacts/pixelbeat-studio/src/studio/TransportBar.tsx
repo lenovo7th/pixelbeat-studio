@@ -1,10 +1,10 @@
 import React from "react";
 import { Pattern } from "./types";
-import { useToast } from "@/hooks/use-toast";
 
 interface TransportBarProps {
   isPlaying: boolean;
   isPaused: boolean;
+  isRecording: boolean;
   bpm: number;
   chainEnabled: boolean;
   onPlay: () => void;
@@ -12,36 +12,20 @@ interface TransportBarProps {
   onResume: () => void;
   onStop: () => void;
   onBpmChange: (bpm: number) => void;
-  onPlayAll: () => void;
+  onPlayMerged: () => void;
   onToggleChain: () => void;
+  onStartRecording: () => void;
+  onStopAndSave: () => void;
   currentPattern: Pattern;
   allPatterns: Pattern[];
 }
 
 export default function TransportBar({
-  isPlaying, isPaused, bpm, chainEnabled,
+  isPlaying, isPaused, isRecording, bpm, chainEnabled,
   onPlay, onPause, onResume, onStop, onBpmChange,
-  onPlayAll, onToggleChain,
-  currentPattern, allPatterns
+  onPlayMerged, onToggleChain,
+  onStartRecording, onStopAndSave,
 }: TransportBarProps) {
-  const { toast } = useToast();
-
-  const handleExport = () => {
-    const payload = {
-      bpm,
-      patterns: allPatterns.map(p => ({
-        id: p.id,
-        name: p.name,
-        tracks: p.tracks.map(t => ({
-          instrument: t.id,
-          steps: t.steps.map((c, i) => ({ step: i, active: c.active, note: c.note }))
-        }))
-      }))
-    };
-    navigator.clipboard.writeText(JSON.stringify(payload, null, 2))
-      .then(() => toast({ title: "Copied to clipboard", description: "All patterns exported as JSON." }))
-      .catch(() => toast({ title: "Export failed", variant: "destructive" }));
-  };
 
   return (
     <div className="transport-bar">
@@ -50,7 +34,7 @@ export default function TransportBar({
           className={`t-btn play-btn${isPlaying && !isPaused ? " t-active" : ""}`}
           onClick={isPaused ? onResume : onPlay}
           data-testid="btn-play"
-          title="Play"
+          title="Play current pattern"
         >
           <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
             <polygon points="2,1 13,7 2,13" />
@@ -98,7 +82,7 @@ export default function TransportBar({
         className={`chain-btn${chainEnabled ? " chain-active" : ""}`}
         onClick={onToggleChain}
         data-testid="btn-chain"
-        title="Chain patterns together"
+        title="Chain patterns in sequence"
       >
         <svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
           <path d="M8 12a4 4 0 0 0 5.66 0l2-2a4 4 0 0 0-5.66-5.66L9 5.34" />
@@ -107,29 +91,45 @@ export default function TransportBar({
         CHAIN
       </button>
 
+      {/* ── MERGE PLAY ── */}
       <button
-        className="play-all-btn"
-        onClick={onPlayAll}
-        data-testid="btn-play-all"
-        title="Play all patterns in sequence"
+        className="merge-play-btn"
+        onClick={onPlayMerged}
+        data-testid="btn-play-merged"
+        title="Merge all patterns and play simultaneously"
       >
-        <svg width="12" height="12" viewBox="0 0 14 14" fill="currentColor">
+        <svg width="14" height="12" viewBox="0 0 16 14" fill="currentColor">
           <polygon points="1,1 8,7 1,13" />
-          <polygon points="7,1 14,7 7,13" />
+          <polygon points="6,1 13,7 6,13" />
+          <rect x="14" y="1" width="2" height="12" />
         </svg>
         PLAY ALL
       </button>
 
       <div className="transport-divider" />
 
-      <button className="export-btn" onClick={handleExport} data-testid="btn-export">
-        <svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M4 12v4a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-4" />
-          <polyline points="7,8 10,11 13,8" />
-          <line x1="10" y1="1" x2="10" y2="11" />
-        </svg>
-        EXPORT JSON
-      </button>
+      {/* ── RECORD / SAVE ── */}
+      {!isRecording ? (
+        <button
+          className="record-btn"
+          onClick={onStartRecording}
+          data-testid="btn-record"
+          title="Record audio output to file"
+        >
+          <span className="rec-dot" />
+          RECORD
+        </button>
+      ) : (
+        <button
+          className="record-btn rec-active"
+          onClick={onStopAndSave}
+          data-testid="btn-save"
+          title="Stop recording and save WAV"
+        >
+          <span className="rec-dot rec-pulse" />
+          SAVE AUDIO
+        </button>
+      )}
     </div>
   );
 }
